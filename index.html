@@ -1,0 +1,1457 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Son-Aura v3 — Psychoacoustic Conflict Interpreter</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet"/>
+
+<!--
+  SON-AURA WEB V3 — index.html
+  ════════════════════════════════════════════════════════════
+  CORRECTIFS APPLIQUÉS (audit 22 faiblesses) :
+  [C01] Guard NaN/division-zéro dans loop() et calcul T
+  [C02] localStorage pour Intention Flag — persist entre sessions
+  [C03] Fenêtre glissante Groove DNA — gère breaks et tempo var.
+  [C04] Guard freqData vide au démarrage / silence
+  [C05] Spectrogramme pré-alloué — zéro allocation dans loop()
+  [C06] Période de chauffe Genre Context (30 frames minimum)
+  [C07] Playback Simulator via BiquadFilterNode WebAudio réels
+  [M08] Overlap O — vraies limites de bandes (pas symétrique)
+  [M09] FFT_SIZE centralisé — freqIdx() dynamique
+  [M10] clearRect cvs-view au retour sur vue Spectre
+  [M11] Anti-rules — seuils recalibrés + calibrage dynamique
+  [M12] Export JSON rapport de session
+  [M13] smoothingTimeConstant connecté au Genre Context
+  [M14] Silence Intelligence — deux niveaux (macro + micro)
+  [M15] Reset .lit des surprises entre fichiers
+  [m16] Log constants pré-calculées hors fonctions
+  [m17] Dirty flag overlay conflits
+  [m18] buildRuler() après chargement fichier
+  [m19] Couleurs canvas via CSS variables (dark/light ready)
+  [UX20] Animation de décodage + durée fichier
+  [UX21] Overflow ellipsis + expansion au clic dans cf-list
+  [UX22] Ring SVG caché avant premier score
+  ════════════════════════════════════════════════════════════
+-->
+
+<style>
+/* ─── RESET ─────────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+/* ─── VARIABLES ─────────────────────────────────────────── */
+:root{
+  --bg0:#060609;--bg1:#0E0E18;--bg2:#14142A;--bg3:#1A1A32;
+  --surf:#12121F;
+  --v:#7B6FFF;--vd:rgba(123,111,255,.14);
+  --tl:#00D4A8;--am:#F5A623;--rd:#FF5555;
+  --t1:#F2F0FF;--t2:#9490CC;--t3:#3D3A5E;
+  --b1:rgba(123,111,255,.18);--b2:rgba(255,255,255,.055);
+  --ui:'Space Grotesk',sans-serif;--mo:'Space Mono',monospace;
+  /* Canvas colors — override in drawInit() pour dark/light */
+  --cvs-bg:#060609;--cvs-grid:rgba(123,111,255,.055);
+  --cvs-t1:#F2F0FF;--cvs-t2:rgba(148,144,204,.6);--cvs-t3:rgba(61,58,94,.8);
+}
+html,body{height:100%;background:var(--bg0);color:var(--t1);font-family:var(--ui);font-size:13px;overflow:hidden}
+
+/* ─── LAYOUT ────────────────────────────────────────────── */
+.shell{display:grid;grid-template-rows:52px 1fr;grid-template-columns:240px 1fr 272px;height:100vh}
+
+/* ─── TOPBAR ────────────────────────────────────────────── */
+.topbar{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 18px;background:var(--bg1);border-bottom:1px solid var(--b2)}
+.logo{font-family:var(--mo);font-size:15px;font-weight:700;color:var(--v);letter-spacing:-.02em}
+.logo-sep{color:var(--t3)}.logo-sub{font-size:10px;color:var(--t3);letter-spacing:.1em;text-transform:uppercase}
+.tb-space{flex:1}
+.status-pill{display:flex;align-items:center;gap:6px;font-family:var(--mo);font-size:10px;color:var(--t2);padding:4px 10px;border-radius:20px;border:1px solid var(--b2)}
+.s-dot{width:5px;height:5px;border-radius:50%;background:var(--t3);transition:background .3s,box-shadow .3s;flex-shrink:0}
+.s-dot.live{background:var(--tl);box-shadow:0 0 6px var(--tl);animation:blink 1.4s infinite}
+.s-dot.err{background:var(--rd)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+.btn{font-family:var(--mo);font-size:11px;padding:7px 14px;border-radius:6px;border:1px solid var(--b1);background:transparent;color:var(--t2);cursor:pointer;transition:all .18s;letter-spacing:.04em;white-space:nowrap}
+.btn:hover{border-color:var(--v);color:var(--v)}
+.btn.primary{border-color:var(--v);color:var(--v)}
+.btn.primary:hover{background:var(--v);color:#fff}
+.btn.recording{border-color:var(--rd);color:var(--rd);animation:prec 1.4s infinite}
+@keyframes prec{0%,100%{box-shadow:0 0 0 0 rgba(255,85,85,.35)}50%{box-shadow:0 0 0 5px rgba(255,85,85,0)}}
+/* Export */
+.btn-export{font-family:var(--mo);font-size:10px;padding:5px 10px;border-radius:5px;border:1px solid var(--b1);background:transparent;color:var(--t2);cursor:pointer;transition:all .18s;letter-spacing:.04em}
+.btn-export:hover{border-color:var(--tl);color:var(--tl)}
+
+/* ─── LEFT PANEL ────────────────────────────────────────── */
+.left{background:var(--bg1);border-right:1px solid var(--b2);display:flex;flex-direction:column;overflow:hidden}
+.p-block{padding:12px 14px;border-bottom:1px solid var(--b2);flex-shrink:0}
+.p-label{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--t3);margin-bottom:10px}
+/* Bandes */
+.band-row{display:flex;align-items:center;gap:7px;margin-bottom:6px}
+.band-lbl{font-family:var(--mo);font-size:9px;color:var(--t2);width:44px;text-align:right;flex-shrink:0}
+.band-track{flex:1;height:4px;background:var(--bg3);border-radius:2px;overflow:hidden}
+.band-bar{height:100%;border-radius:2px;width:0%;transition:width .08s linear}
+.band-db{font-family:var(--mo);font-size:9px;color:var(--t3);width:36px;text-align:right;flex-shrink:0}
+/* Conflits */
+.cf-scroll{flex:1;overflow-y:auto}
+.cf-scroll::-webkit-scrollbar{width:2px}
+.cf-scroll::-webkit-scrollbar-thumb{background:var(--v);border-radius:2px}
+.cf-item{padding:8px 14px;border-left:2px solid transparent;transition:background .12s;cursor:pointer}
+.cf-item:hover{background:var(--bg2)}
+.cf-item.LOW{border-color:var(--t3)}.cf-item.MEDIUM{border-color:var(--am)}
+.cf-item.HIGH{border-color:#FF7A3D}.cf-item.CRITICAL{border-color:var(--rd)}
+.cf-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px}
+.cf-sev{font-family:var(--mo);font-size:9px;font-weight:700;letter-spacing:.08em}
+.cf-sev.LOW{color:var(--t3)}.cf-sev.MEDIUM{color:var(--am)}.cf-sev.HIGH{color:#FF7A3D}.cf-sev.CRITICAL{color:var(--rd)}
+.cf-freq{font-family:var(--mo);font-size:9px;color:var(--t3)}
+/* [UX21] overflow + expansion */
+.cf-explain{font-size:11px;color:var(--t1);line-height:1.5;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cf-item.expanded .cf-explain{white-space:normal}
+.cf-effect{font-size:10px;color:var(--t2);font-style:italic}
+.no-cf{padding:28px 14px;text-align:center;font-size:11px;color:var(--tl);line-height:2}
+
+/* ─── CENTER ────────────────────────────────────────────── */
+.center{display:flex;flex-direction:column;background:var(--bg0);overflow:hidden;position:relative}
+.viz-tabs{display:flex;gap:2px;padding:8px 12px 0;background:var(--bg1);border-bottom:1px solid var(--b2);flex-shrink:0}
+.viz-tab{font-family:var(--mo);font-size:10px;letter-spacing:.06em;padding:5px 12px 7px;border-radius:4px 4px 0 0;border:1px solid transparent;border-bottom:none;cursor:pointer;color:var(--t2);background:transparent;transition:all .15s}
+.viz-tab:hover{color:var(--t1)}.viz-tab.active{color:var(--v);background:var(--bg0);border-color:var(--b1)}
+.cvs-wrap{flex:1;position:relative;overflow:hidden}
+canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+#cvs-main{z-index:1}#cvs-over{z-index:2;pointer-events:none}#cvs-view{z-index:3;pointer-events:none}
+.scan{position:absolute;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--v),transparent);opacity:0;z-index:5;pointer-events:none}
+.scan.on{opacity:.28;animation:scan 3s linear infinite}
+@keyframes scan{0%{top:0}100%{top:100%}}
+.rms-wrap{height:3px;background:var(--bg1);flex-shrink:0}
+#rms-fill{height:100%;background:linear-gradient(90deg,var(--v),var(--tl));width:0%;transition:width .06s linear}
+.freq-ruler{height:18px;background:var(--bg1);border-top:1px solid var(--b2);position:relative;flex-shrink:0}
+.freq-lbl{position:absolute;font-family:var(--mo);font-size:9px;color:var(--t3);transform:translateX(-50%);top:3px}
+
+/* [UX20] Upload zone avec état décodage */
+.upload-zone{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--bg0);z-index:20;transition:opacity .3s}
+.upload-zone.hidden{opacity:0;pointer-events:none}
+.u-icon{font-size:36px;color:var(--v);margin-bottom:16px;opacity:.5;animation:float 3s ease-in-out infinite}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+.u-title{font-family:var(--mo);font-size:18px;font-weight:700;color:var(--t1);margin-bottom:6px}
+.u-sub{font-size:12px;color:var(--t2);text-align:center;line-height:1.7;max-width:300px;margin-bottom:20px}
+/* Barre décodage */
+.decode-bar{width:200px;height:3px;background:var(--bg3);border-radius:2px;overflow:hidden;display:none}
+.decode-fill{height:100%;width:0%;background:var(--v);border-radius:2px;animation:decode-pulse 1.2s ease-in-out infinite}
+@keyframes decode-pulse{0%,100%{width:20%}50%{width:80%}}
+.decode-label{font-family:var(--mo);font-size:10px;color:var(--t2);margin-top:8px;display:none}
+
+/* ─── RIGHT PANEL ───────────────────────────────────────── */
+.right{background:var(--bg1);border-left:1px solid var(--b2);display:flex;flex-direction:column;overflow:hidden}
+.ring-block{padding:16px 14px;border-bottom:1px solid var(--b2);display:flex;flex-direction:column;align-items:center;flex-shrink:0}
+.ring-wrap{position:relative;width:100px;height:100px;margin-bottom:8px}
+#ring-svg{transform:rotate(-90deg)}
+#ring-bg{fill:none;stroke:var(--bg3);stroke-width:8}
+/* [UX22] Ring caché avant premier score */
+#ring-fill{fill:none;stroke:var(--tl);stroke-width:8;stroke-linecap:round;stroke-dasharray:263;stroke-dashoffset:263;transition:stroke-dashoffset .5s ease,stroke .5s;opacity:0}
+.ring-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+#score-n{font-family:var(--mo);font-size:26px;font-weight:700;color:var(--tl);line-height:1;transition:color .4s;opacity:0}
+#score-s{font-size:9px;color:var(--t3);letter-spacing:.08em;margin-top:2px}
+#health-t{font-family:var(--mo);font-size:12px;font-weight:700;color:var(--tl);text-align:center;transition:color .4s}
+#health-d{font-size:10px;color:var(--t2);text-align:center;margin-top:3px}
+/* Métriques */
+.met-block{padding:12px 14px;border-bottom:1px solid var(--b2);flex-shrink:0}
+.met-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px}
+.met-name{font-size:10px;color:var(--t2)}.met-val{font-family:var(--mo);font-size:11px;color:var(--t1);font-variant-numeric:tabular-nums}
+.met-bar{height:2px;background:var(--bg3);border-radius:1px;margin-bottom:8px;overflow:hidden}
+.met-fill{height:100%;border-radius:1px;width:0%;transition:width .15s}
+/* Surprises */
+.surp-scroll{flex:1;overflow-y:auto;padding:10px 14px}
+.surp-scroll::-webkit-scrollbar{width:2px}
+.surp-scroll::-webkit-scrollbar-thumb{background:var(--v);border-radius:2px}
+.surp-card{border:1px solid var(--b2);border-radius:6px;padding:9px 10px;margin-bottom:6px;background:var(--surf);transition:border-color .2s}
+.surp-card.lit{border-color:rgba(245,166,35,.35)}
+.s-who{font-family:var(--mo);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--am);margin-bottom:3px}
+.s-txt{font-size:10px;color:var(--t2);line-height:1.55}
+.s-txt strong{color:var(--t1);font-weight:600}
+/* Intention Flag */
+.int-block{padding:10px 14px;border-bottom:1px solid var(--b2);flex-shrink:0}
+.int-row{display:flex;gap:6px;margin-top:7px}
+.int-sel{flex:1;background:var(--bg2);border:1px solid var(--b2);color:var(--t1);font-family:var(--mo);font-size:10px;padding:5px 8px;border-radius:5px;appearance:none}
+.btn-flag{font-family:var(--mo);font-size:10px;padding:5px 10px;border-radius:5px;border:1px solid var(--b1);background:var(--vd);color:var(--v);cursor:pointer;transition:all .2s}
+.btn-flag:hover{background:var(--v);color:#fff}
+.flags-wrap{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.flag-tag{font-family:var(--mo);font-size:10px;padding:2px 8px;border-radius:4px;background:var(--vd);color:var(--v);border:1px solid rgba(123,111,255,.25);cursor:pointer}
+.flag-tag:hover{opacity:.55}
+/* Toast */
+#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%) translateY(14px);background:var(--bg2);border:1px solid var(--b1);color:var(--t1);font-family:var(--mo);font-size:11px;padding:9px 16px;border-radius:8px;opacity:0;pointer-events:none;transition:all .28s;white-space:nowrap;z-index:999}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<!-- TOPBAR -->
+<header class="topbar">
+  <span class="logo">SON-AURA</span>
+  <span class="logo-sep">/</span>
+  <span class="logo-sub">Psychoacoustic Conflict Interpreter v3</span>
+  <div class="tb-space"></div>
+  <div class="status-pill">
+    <div class="s-dot" id="s-dot"></div>
+    <span id="s-text">En attente</span>
+  </div>
+  <input type="file" id="file-in" accept="audio/*" style="display:none"/>
+  <button class="btn" id="btn-file">📂 Fichier</button>
+  <button class="btn-export" id="btn-export">⬇ Rapport JSON</button><!-- [M12] -->
+  <button class="btn primary" id="btn-mic">🎙 Micro live</button>
+</header>
+
+<!-- LEFT — Bandes + Conflits -->
+<aside class="left">
+  <div class="p-block">
+    <div class="p-label">Bandes d'énergie</div>
+    <div class="band-row"><span class="band-lbl">sub</span><div class="band-track"><div class="band-bar" id="b-sub" style="background:#7B6FFF"></div></div><span class="band-db" id="db-sub">—</span></div>
+    <div class="band-row"><span class="band-lbl">bass</span><div class="band-track"><div class="band-bar" id="b-bass" style="background:#9B90FF"></div></div><span class="band-db" id="db-bass">—</span></div>
+    <div class="band-row"><span class="band-lbl">low-mid</span><div class="band-track"><div class="band-bar" id="b-lowmid" style="background:#00D4A8"></div></div><span class="band-db" id="db-lowmid">—</span></div>
+    <div class="band-row"><span class="band-lbl">mid</span><div class="band-track"><div class="band-bar" id="b-mid" style="background:#4ADE80"></div></div><span class="band-db" id="db-mid">—</span></div>
+    <div class="band-row"><span class="band-lbl">high</span><div class="band-track"><div class="band-bar" id="b-high" style="background:#9FEADB"></div></div><span class="band-db" id="db-high">—</span></div>
+  </div>
+  <div class="p-label" style="padding:10px 14px 0">Conflits détectés</div>
+  <div class="cf-scroll" id="cf-list">
+    <div class="no-cf">Charge un fichier audio<br/>ou active le micro.</div>
+  </div>
+</aside>
+
+<!-- CENTER — Visualiseur -->
+<main class="center">
+  <nav class="viz-tabs">
+    <button class="viz-tab active" data-view="spectrum">Spectre</button>
+    <button class="viz-tab" data-view="groove">Groove DNA</button>
+    <button class="viz-tab" data-view="silence">Silence</button>
+    <button class="viz-tab" data-view="playback">Playback</button>
+    <button class="viz-tab" data-view="antirules">Anti-rules</button>
+  </nav>
+  <div class="cvs-wrap">
+    <canvas id="cvs-main"></canvas>
+    <canvas id="cvs-over"></canvas>
+    <canvas id="cvs-view"></canvas>
+    <div class="scan" id="scan"></div>
+    <div class="upload-zone" id="uzone">
+      <div class="u-icon">◈</div>
+      <div class="u-title">Son-Aura</div>
+      <div class="u-sub">10 moteurs actifs. Charge un MP3/WAV ou active le micro pour analyser ton mix.</div>
+      <button class="btn primary" id="btn-big" style="font-size:13px;padding:10px 24px;border-radius:8px;margin-bottom:16px">Charger un fichier audio</button>
+      <!-- [UX20] Barre de décodage -->
+      <div class="decode-bar" id="decode-bar"><div class="decode-fill"></div></div>
+      <div class="decode-label" id="decode-label">Décodage en cours…</div>
+    </div>
+  </div>
+  <div class="rms-wrap"><div id="rms-fill"></div></div>
+  <div class="freq-ruler" id="ruler"></div>
+</main>
+
+<!-- RIGHT — Score + Métriques + Surprises -->
+<aside class="right">
+  <div class="ring-block">
+    <div class="p-label">Mix Health Score</div>
+    <div class="ring-wrap">
+      <svg id="ring-svg" width="100" height="100" viewBox="0 0 100 100">
+        <circle id="ring-bg" cx="50" cy="50" r="42"/>
+        <circle id="ring-fill" cx="50" cy="50" r="42"/>
+      </svg>
+      <div class="ring-center">
+        <div id="score-n">—</div><!-- [UX22] opacity:0 jusqu'au 1er score -->
+        <div id="score-s">/ 100</div>
+      </div>
+    </div>
+    <div id="health-t">En attente</div>
+    <div id="health-d">Charge un mix pour commencer</div>
+  </div>
+  <div class="met-block">
+    <div class="p-label">Métriques — C = O × T × W</div>
+    <div class="met-row"><span class="met-name">Overlap O</span><span class="met-val" id="m-O">—</span></div>
+    <div class="met-bar"><div class="met-fill" id="mb-O" style="background:var(--v)"></div></div>
+    <div class="met-row"><span class="met-name">Transient T</span><span class="met-val" id="m-T">—</span></div>
+    <div class="met-bar"><div class="met-fill" id="mb-T" style="background:var(--am)"></div></div>
+    <div class="met-row"><span class="met-name">Perceptual W</span><span class="met-val" id="m-W">—</span></div>
+    <div class="met-bar"><div class="met-fill" id="mb-W" style="background:var(--tl)"></div></div>
+    <div class="met-row"><span class="met-name">Densité</span><span class="met-val" id="m-D">—</span></div>
+    <div class="met-bar"><div class="met-fill" id="mb-D" style="background:#FF7A3D"></div></div>
+    <div class="met-row" style="margin-top:6px"><span class="met-name">Genre</span><span class="met-val" id="m-genre" style="color:var(--v)">—</span></div>
+    <div class="met-row"><span class="met-name">Température</span><span class="met-val" id="m-temp" style="color:var(--am)">—</span></div>
+    <div class="met-row"><span class="met-name">Groove feel</span><span class="met-val" id="m-feel" style="color:var(--tl)">—</span></div>
+    <div class="met-row"><span class="met-name">Breath score</span><span class="met-val" id="m-breath" style="color:#FF6EBF">—</span></div><!-- [M14] -->
+  </div>
+  <div class="int-block">
+    <div class="p-label">Intention Flag ★ Brian Eno</div>
+    <div class="int-row">
+      <select class="int-sel" id="flag-sel">
+        <option value="sub-bass">Sub/Bass — 20–250 Hz</option>
+        <option value="bass-mid">Bass/Mid — 80–1k Hz</option>
+        <option value="mid">Mid — 250Hz–4kHz</option>
+        <option value="high">High — 4k–16kHz</option>
+      </select>
+      <button class="btn-flag" id="btn-flag">+ Flag</button>
+    </div>
+    <div class="flags-wrap" id="flags-wrap"></div>
+  </div>
+  <div class="surp-scroll">
+    <div class="p-label" style="margin-bottom:8px">Surprises débloquées</div>
+    <div class="surp-card" id="sc-dilla"><div class="s-who">★ J Dilla — Human Feel</div><div class="s-txt" id="st-dilla">Démarre l'audio pour mesurer le feel.</div></div>
+    <div class="surp-card" id="sc-pharrell"><div class="s-who">★ Pharrell — Température</div><div class="s-txt" id="st-pharrell">Température sonore : —</div></div>
+    <div class="surp-card" id="sc-rubin"><div class="s-who">★ Rick Rubin — Silence</div><div class="s-txt" id="st-rubin">Mode Silence : en attente.</div></div>
+    <div class="surp-card" id="sc-quincy"><div class="s-who">★ Quincy Jones — Genre</div><div class="s-txt" id="st-quincy">Genre Context : calibrage…</div></div>
+    <div class="surp-card lit"><div class="s-who">★ Brian Eno — Intention Flag</div><div class="s-txt">Marque les zones intentionnelles — Son-Aura les respecte. Persistées entre sessions.</div></div>
+    <div class="surp-card" id="sc-arca"><div class="s-who">★ Arca — Anti-rules</div><div class="s-txt" id="st-arca">Zones non-conventionnelles : en attente.</div></div>
+    <div class="surp-card" id="sc-hildur"><div class="s-who">★ Hildur — Silence Intelligence</div><div class="s-txt" id="st-hildur">Espaces silencieux : en attente.</div></div>
+    <div class="surp-card" id="sc-maxm"><div class="s-who">★ Max Martin — Playback</div><div class="s-txt" id="st-maxm">Simulateur WebAudio : en attente.</div></div>
+  </div>
+</aside>
+</div><!-- /.shell -->
+
+<div id="toast"></div>
+
+<!-- ════════════════════════════════════════════════════════
+     JAVASCRIPT — 10 MOTEURS CORRIGÉS
+     ════════════════════════════════════════════════════════ -->
+<script>
+'use strict';
+
+/* ─────────────────────────────────────────────────────────
+   CONSTANTES GLOBALES  [M09] — centralisées
+   ───────────────────────────────────────────────────────── */
+const FFT_SIZE     = 2048;
+const FFT_BINS     = FFT_SIZE / 2;
+const SPEC_COLS    = 512;
+const WARMUP_FRAMES= 30;  // [C06] Chauffe Genre Context
+
+/* [m16] Log constants pré-calculées une seule fois */
+const LOG_MIN   = Math.log10(20);
+const LOG_MAX   = Math.log10(20000);
+const LOG_RANGE = LOG_MAX - LOG_MIN;
+
+/* ─────────────────────────────────────────────────────────
+   ÉTAT GLOBAL
+   ───────────────────────────────────────────────────────── */
+const S = {
+  ctx:null, analyser:null, source:null,
+  freqData:null, timeData:null,
+  running:false, micActive:false,
+  sampleRate:44100,
+  currentView:'spectrum',
+  firstScore:false,       // [UX22]
+  frameCount:0,           // [C06] chauffe
+
+  /* Historiques bandes */
+  prevBands:{ sub:0, bass:0, lowmid:0, mid:0, high:0 },
+
+  /* [C05] Spectrogramme pré-alloué — zéro allocation dans loop() */
+  specHistory:null,  // Float32Array[][] — initialisé dans initBuffers()
+  specPos:0,
+
+  /* Genre */
+  genreHistory:[],
+  genreCtx:null,
+
+  /* Groove DNA [C03] fenêtre glissante */
+  groovePeaks:[],
+  grooveBuf:[],
+  GROOVE_WINDOW:32,
+  GROOVE_BREAK_MULT:2.5,
+
+  /* Silence [M14] deux niveaux */
+  silenceHist:[],
+  microSilenceCount:0,
+  breathScore:0,
+  inSilence:false,
+  silenceStart:null,
+  lastEnergy:0,
+
+  /* Anti-rules [M11] calibrage dynamique */
+  antiCalib:{ mean:0, frames:0 },
+
+  /* Conflits — [m17] dirty flag overlay */
+  lastConflicts:[],
+  conflictsDirty:true,
+
+  /* Intention Flag [C02] localStorage */
+  intentZones:[],
+
+  /* Rapport [M12] */
+  sessionLog:[],
+  sessionStart:null,
+};
+
+/* ─────────────────────────────────────────────────────────
+   INIT BUFFERS  [C05] — pré-allocation spectrogramme
+   ───────────────────────────────────────────────────────── */
+function initBuffers(){
+  S.specHistory = Array.from({ length:SPEC_COLS }, () => new Float32Array(FFT_BINS));
+  S.specPos     = 0;
+}
+initBuffers();
+
+/* ─────────────────────────────────────────────────────────
+   UTILITAIRES FRÉQUENCE  [M09] dynamique
+   ───────────────────────────────────────────────────────── */
+function freqIdx(freq){
+  /* Utilise S.analyser.frequencyBinCount si disponible */
+  const bins = S.analyser ? S.analyser.frequencyBinCount : FFT_BINS;
+  return Math.min(Math.round(freq / (S.sampleRate / 2) * bins), bins - 1);
+}
+
+/* [m16] Utilise LOG_MIN / LOG_RANGE pré-calculés */
+function fToNorm(freq){
+  return (Math.log10(Math.max(20, Math.min(20000, freq))) - LOG_MIN) / LOG_RANGE;
+}
+function fToX(freq, W){ return fToNorm(freq) * W; }
+function fToY(freq, H){ return H - fToNorm(freq) * H; }
+
+function toDB(amp){ return amp < 1e-7 ? -140 : 20 * Math.log10(amp); }
+
+/* ─────────────────────────────────────────────────────────
+   MOTEUR 1 — POIDS PERCEPTIFS (Fletcher-Munson)
+   ───────────────────────────────────────────────────────── */
+function pw(freq){
+  if(freq >= 2000 && freq <= 5000) return 1.0;
+  if(freq < 80)   return 0.2  + 0.3  * ((freq - 20)  / 60);
+  if(freq < 250)  return 0.5  + 0.3  * ((freq - 80)  / 170);
+  if(freq < 1000) return 0.8  + 0.2  * ((freq - 250) / 750);
+  if(freq < 2000) return 0.85 + 0.15 * ((freq - 1000)/ 1000);
+  return Math.max(0.35, 1 - 0.65 * ((freq - 5000) / 11000));
+}
+
+/* ─────────────────────────────────────────────────────────
+   MOTEUR 2 — SPECTRAL ANALYZER (5 bandes)
+   ───────────────────────────────────────────────────────── */
+const BANDS = [
+  { id:'sub',    lo:20,    hi:80    },
+  { id:'bass',   lo:80,    hi:250   },
+  { id:'lowmid', lo:250,   hi:1000  },
+  { id:'mid',    lo:1000,  hi:4000  },
+  { id:'high',   lo:4000,  hi:16000 },
+];
+
+function computeBands(){
+  const r = {};
+  /* [C04] guard — freqData vide ou null */
+  if(!S.freqData || S.freqData.every(v => v === 0)){
+    BANDS.forEach(b => r[b.id] = 0);
+    return r;
+  }
+  BANDS.forEach(b => {
+    const lo = freqIdx(b.lo), hi = freqIdx(b.hi);
+    let es = 0, ws = 0;
+    for(let k = lo; k <= hi; k++){
+      const f = k * S.sampleRate / FFT_SIZE;
+      const w = pw(f);
+      es += (S.freqData[k] / 255) * w;
+      ws += w;
+    }
+    r[b.id] = ws > 0 ? es / ws : 0;
+  });
+  return r;
+}
+
+/* ─────────────────────────────────────────────────────────
+   MOTEUR 3 — GENRE CONTEXT (Quincy Jones)  [C06] chauffe
+   [M13] smoothing connecté à analyser
+   ───────────────────────────────────────────────────────── */
+const GENRE_NEUTRAL = { genre:'—', thr:0.25, ts:1.0, sm:0.82 };
+
+function detectGenre(bands, tActivity){
+  const lowR  = (bands.sub + bands.bass) / (bands.mid + bands.high + 0.01);
+  const highR = bands.high / (bands.sub + bands.bass + 0.01);
+  const dens  = Object.values(bands).reduce((a,v) => a+v, 0) / 5;
+
+  S.genreHistory.push({ lowR, highR, dens, tActivity });
+  if(S.genreHistory.length > 60) S.genreHistory.shift();
+
+  /* [C06] Retourner neutre pendant la chauffe */
+  if(S.genreHistory.length < WARMUP_FRAMES) return GENRE_NEUTRAL;
+
+  const avg = fn => S.genreHistory.reduce((a,f) => a+fn(f), 0) / S.genreHistory.length;
+  const aL  = avg(f => f.lowR);
+  const aH  = avg(f => f.highR);
+  const aT  = avg(f => f.tActivity);
+  const aD  = avg(f => f.dens);
+
+  let ctx;
+  if(aL > 1.5 && aT > 0.5)    ctx = { genre:'Trap / EDM',      thr:0.35, ts:0.6,  sm:0.85 };
+  else if(aL > 1.0 && aT > 0.3)ctx= { genre:'Hip-Hop',          thr:0.25, ts:0.8,  sm:0.88 };
+  else if(aH > 1.2)             ctx= { genre:'Rock / Metal',     thr:0.30, ts:1.2,  sm:0.80 };
+  else if(aD < 0.15 && aT < 0.2)ctx={ genre:'Ambient',          thr:0.10, ts:2.0,  sm:0.95 };
+  else if(aH > 0.6 && aT < 0.3)ctx = { genre:'Jazz / Soul',     thr:0.15, ts:1.5,  sm:0.92 };
+  else if(aD > 0.4 && aH > 0.8)ctx = { genre:'Classique',       thr:0.20, ts:1.8,  sm:0.95 };
+  else                          ctx = { genre:'Pop / Générique', thr:0.25, ts:1.0,  sm:0.82 };
+
+  /* [M13] Appliquer le smoothing à l'analyser en temps réel */
+  if(S.analyser && Math.abs(ctx.sm - S.analyser.smoothingTimeConstant) > 0.01){
+    S.analyser.smoothingTimeConstant = ctx.sm;
+  }
+  return ctx;
+}
+
+/* ─────────────────────────────────────────────────────────
+   MOTEUR 4 — TEMPÉRATURE SONORE (Pharrell)
+   ───────────────────────────────────────────────────────── */
+function temperature(bands){
+  const warm = (bands.sub + bands.bass) * 0.7 + bands.lowmid * 0.3;
+  const brit = bands.high + bands.mid * 0.4;
+  const dens = Object.values(bands).reduce((a,v) => a+v, 0) / 5;
+  if(dens < 0.06)               return '🔇 Silencieux';
+  if(dens > 0.55)               return '🧱 Dense';
+  if(warm > 0.5 && brit < 0.2)  return '🌋 Lourd — sombre';
+  if(warm > 0.35 && brit > 0.3) return '☀️ Chaud — équilibré';
+  if(brit > 0.5 && warm < 0.2)  return '❄️ Brillant — froid';
+  if(brit > 0.35)                return '💡 Aérien — lumineux';
+  if(warm > 0.25)                return '🎸 Chaud — présent';
+  return '⚖️ Neutre';
+}
+
+/* ─────────────────────────────────────────────────────────
+   MOTEUR 5 — GROOVE DNA (Timbaland)  [C03] fenêtre glissante
+   ───────────────────────────────────────────────────────── */
+function grooveDNA(){
+  const lo = freqIdx(55), hi = freqIdx(100);
+  let e = 0;
+  for(let k = lo; k <= hi; k++) e += S.freqData[k] / 255;
+  e /= Math.max(1, hi - lo + 1);
+
+  const prev = S.grooveBuf[S.grooveBuf.length - 1] || 0;
+  const isPeak = e > prev * 1.65 && e > 0.14;
+  if(isPeak) S.groovePeaks.push(performance.now());
+  S.grooveBuf.push(e);
+
+  /* [C03] Fenêtre glissante — max GROOVE_WINDOW pics */
+  if(S.groovePeaks.length > S.GROOVE_WINDOW) S.groovePeaks.shift();
+  if(S.grooveBuf.length > 8) S.grooveBuf.shift();
+
+  if(S.groovePeaks.length < 4) return { feel:0, label:'— Calibrage…' };
+
+  const ivs = [];
+  for(let i = 1; i < S.groovePeaks.length; i++)
+    ivs.push(S.groovePeaks[i] - S.groovePeaks[i-1]);
+
+  /* [C03] Détecter rupture de tempo — reset si intervalle > 2.5× médiane */
+  const sorted = [...ivs].sort((a,b) => a-b);
+  const median = sorted[Math.floor(sorted.length/2)];
+  const hasBreak = ivs.some(iv => iv > median * S.GROOVE_BREAK_MULT);
+  if(hasBreak){
+    /* Garder seulement les 8 derniers pics après la rupture */
+    S.groovePeaks.splice(0, Math.max(0, S.groovePeaks.length - 8));
+    return { feel:0, label:'— Break détecté…' };
+  }
+
+  const mean = ivs.reduce((a,v) => a+v, 0) / ivs.length;
+  const std  = Math.sqrt(ivs.reduce((a,v) => a+(v-mean)**2, 0) / ivs.length);
+  const normStd = Math.min(1, std / (mean * 0.4));
+
+  let swingR = 0;
+  for(let i = 0; i+1 < ivs.length; i += 2)
+    swingR += ivs[i] / (ivs[i+1] + 1);
+  swingR /= Math.max(1, Math.floor(ivs.length / 2));
+
+  const feel  = Math.round(Math.min(100, normStd * 85 + (swingR > 1.1 ? 15 : 0)));
+  const label = feel > 70 ? '🔥 Feel humain fort'
+              : feel > 40 ? '🎵 Feel mixte'
+              : feel > 10 ? '🤖 Timing mécanique'
+              : '— Calibrage…';
+  return { feel, label };
+}
+
+/* ─────────────────────────────────────────────────────────
+   MOTEUR 6 — SILENCE INTELLIGENCE (Hildur)  [M14] deux niveaux
+   Macro (> 200ms) + Micro (< 80ms) → Breath Score
+   ───────────────────────────────────────────────────────── */
+function silenceIntel(bands, ts){
+  const energy = Object.values(bands).reduce((a,v) => a+v, 0) / 5;
+  const silent = energy < 0.05;
+
+  if(silent && !S.inSilence){
+    S.inSilence = true; S.silenceStart = ts;
+  } else if(!silent && S.inSilence){
+    const dur = ts - S.silenceStart;
+    if(dur > 200){
+      /* Macro-silence */
+      S.silenceHist.push({ start:S.silenceStart, duration:Math.round(dur) });
+      if(S.silenceHist.length > 20) S.silenceHist.shift();
+    } else if(dur > 15 && dur < 80){
+      /* [M14] Micro-silence rythmique → Breath Score */
+      S.microSilenceCount++;
+      S.breathScore = Math.min(100, Math.round(S.microSilenceCount * 2.5));
+    }
+    S.inSilence = false;
+  }
+  S.lastEnergy = energy;
+
+  const recentDur = S.silenceHist.slice(-3).reduce((a,v) => a+v.duration, 0)
+                  / Math.max(1, Math.min(3, S.silenceHist.length));
+
+  let label;
+  if(S.inSilence)               label = `Silence actif — ${Math.round(ts - S.silenceStart)}ms`;
+  else if(recentDur > 500)      label = `Silences longs (~${Math.round(recentDur)}ms) — respiration forte`;
+  else if(recentDur > 100)      label = `Micro-silences (~${Math.round(recentDur)}ms) — dynamique présente`;
+  else if(S.silenceHist.length===0) label = 'Aucun espace — mix continu';
+  else                          label = `${S.silenceHist.length} silence(s) — dynamique normale`;
+
+  return { inSilence:S.inSilence, label, count:S.silenceHist.length, breathScore:S.breathScore };
+}
+
+/* ─────────────────────────────────────────────────────────
+   MOTEUR 7 — PLAYBACK SIMULATOR (Max Martin)  [C07]
+   Vrai filtre WebAudio via BiquadFilterNode + OfflineAudioContext
+   ───────────────────────────────────────────────────────── */
+
+/* Profils de filtres par système (chaîne de biquads) */
+const PLAYBACK_PROFILES = [
+  {
+    name:'AirPods Pro', icon:'🎧',
+    filters:[
+      { type:'highpass',  freq:30,   gain:0,   Q:0.7  },
+      { type:'peaking',   freq:3000, gain:2.5, Q:1.2  },
+      { type:'highshelf', freq:8000, gain:1.5, Q:0.7  },
+    ],
+  },
+  {
+    name:'Enceinte BT', icon:'📢',
+    filters:[
+      { type:'highpass',  freq:90,   gain:0,   Q:0.7  },
+      { type:'peaking',   freq:150,  gain:4.0, Q:1.5  },
+      { type:'lowpass',   freq:9000, gain:0,   Q:0.7  },
+    ],
+  },
+  {
+    name:'Voiture', icon:'🚗',
+    filters:[
+      { type:'highpass',  freq:70,   gain:0,   Q:0.7  },
+      { type:'peaking',   freq:300,  gain:3.0, Q:1.0  },
+      { type:'peaking',   freq:6000, gain:-3,  Q:1.2  },
+    ],
+  },
+];
+
+/*
+  Simulation via OfflineAudioContext sur un court buffer (0.5s)
+  Retourne le score de rendu + problèmes détectés.
+  Appelée asynchrone — résultats mis à jour dans S.simResults.
+*/
+let S_simResults = PLAYBACK_PROFILES.map(p => ({ ...p, score:50, issues:[], ready:false }));
+
+async function runPlaybackSim(bands){
+  for(let pi = 0; pi < PLAYBACK_PROFILES.length; pi++){
+    const profile = PLAYBACK_PROFILES[pi];
+    try{
+      /* Créer un buffer court rempli de bruit blanc pondéré par spectre actuel */
+      const dur    = 0.5;
+      const sr     = S.sampleRate || 44100;
+      const offCtx = new OfflineAudioContext(1, Math.round(sr * dur), sr);
+      const buf    = offCtx.createBuffer(1, Math.round(sr * dur), sr);
+      const data   = buf.getChannelData(0);
+
+      /* Remplir avec du bruit pondéré par les bandes actives */
+      for(let i = 0; i < data.length; i++){
+        data[i] = (Math.random() * 2 - 1) * 0.3 *
+          (bands.sub * 0.3 + bands.bass * 0.5 + bands.lowmid * 0.8 +
+           bands.mid * 1.0 + bands.high * 0.7);
+      }
+
+      const src = offCtx.createBufferSource();
+      src.buffer = buf;
+
+      /* Chaîne de filtres biquad */
+      let node = src;
+      profile.filters.forEach(f => {
+        const biq = offCtx.createBiquadFilter();
+        biq.type            = f.type;
+        biq.frequency.value = f.freq;
+        biq.gain.value      = f.gain || 0;
+        biq.Q.value         = f.Q || 1;
+        node.connect(biq);
+        node = biq;
+      });
+
+      const analyserOff = offCtx.createAnalyser();
+      analyserOff.fftSize = 2048;
+      node.connect(analyserOff);
+      analyserOff.connect(offCtx.destination);
+      src.start();
+
+      const rendered  = await offCtx.startRendering();
+      const outData   = rendered.getChannelData(0);
+      const rms       = Math.sqrt(outData.reduce((a,v) => a+v*v, 0) / outData.length);
+      const score     = Math.round(Math.min(100, Math.max(0, rms * 800)));
+
+      const issues = [];
+      if(profile.name === 'AirPods Pro' && bands.sub > 0.3)  issues.push('Sub perdu sur ce système');
+      if(profile.name === 'AirPods Pro' && bands.high > 0.5) issues.push('Aigus potentiellement fatigants');
+      if(profile.name === 'Enceinte BT' && bands.sub > 0.4)  issues.push('Sub inaudible — groove perdu');
+      if(profile.name === 'Enceinte BT' && bands.bass > 0.5) issues.push('Risque saturation basses');
+      if(profile.name === 'Voiture' && bands.mid < 0.1)      issues.push('Vocals peu présents');
+      if(profile.name === 'Voiture' && bands.sub > 0.35)     issues.push('Sub perdu — vibrations');
+
+      S_simResults[pi] = { ...profile, score, issues, ready:true };
+    } catch(e){
+      /* Fallback si OfflineAudioContext échoue (ex: mobile restreint) */
+      const tot = BANDS.reduce((a,b) => a+(bands[b.id]||0)*(profile.filters[0]?.gain>0?1.1:0.9), 0)/BANDS.length;
+      S_simResults[pi] = { ...profile, score:Math.round(Math.min(100,tot*200)), issues:[], ready:true };
+    }
+  }
+}
+
+/* ─────────────────────────────────────────────────────────
+   MOTEUR 8 — CONFLICT ENGINE  [M08] [C04]
+   C = O × T × W  +  Direction causale  +  Intention Flag
+   ───────────────────────────────────────────────────────── */
+const CF_PAIRS = [
+  { a:'sub',    b:'bass',   nA:'Sub',     nB:'Bass',    loA:20,  hiB:250,  borderF:80   },
+  { a:'bass',   b:'lowmid', nA:'Bass',    nB:'Low-Mid', loA:80,  hiB:1000, borderF:250  },
+  { a:'lowmid', b:'mid',    nA:'Low-Mid', nB:'Mid',     loA:250, hiB:4000, borderF:1000 },
+  { a:'mid',    b:'high',   nA:'Mid',     nB:'High',    loA:1000,hiB:16000,borderF:4000 },
+];
+
+/* Historique énergie pour calcul T */
+const PREV_E = {};
+
+/* Ranges d'intention flag */
+const INTENT_R = {
+  'sub-bass':{ lo:20,hi:250 }, 'bass-mid':{ lo:80,hi:1000 },
+  'mid':{ lo:250,hi:4000 }, 'high':{ lo:4000,hi:16000 },
+};
+function isIntentional(lo, hi){
+  return S.intentZones.some(k => {
+    const z = INTENT_R[k]; return z && lo < z.hi && hi > z.lo;
+  });
+}
+
+function detectConflicts(bands, genreCtx){
+  const thr = genreCtx ? genreCtx.thr : 0.25;
+  const ts  = genreCtx ? genreCtx.ts  : 1.0;
+  const events = [];
+
+  /* [C04] Guard — données vides */
+  if(!S.freqData || S.freqData.every(v => v === 0)) return events;
+
+  CF_PAIRS.forEach(p => {
+    const eA = bands[p.a] || 0, eB = bands[p.b] || 0;
+    if(eA < 0.015 && eB < 0.015) return;
+    if(isIntentional(p.loA, p.hiB)) return;
+
+    /* [M08] Overlap O — vraies limites de bandes */
+    const loIdx = freqIdx(p.loA);
+    const bIdx  = freqIdx(p.borderF);  // frontière naturelle entre A et B
+    const hiIdx = freqIdx(p.hiB);
+
+    let sA = 0, cA = 0, sB = 0, cB = 0;
+    for(let k = loIdx; k < bIdx && k < FFT_BINS; k++){ sA += S.freqData[k]/255; cA++; }
+    for(let k = bIdx;  k <= hiIdx && k < FFT_BINS; k++){ sB += S.freqData[k]/255; cB++; }
+    const nA = cA > 0 ? sA/cA : 0;
+    const nB = cB > 0 ? sB/cB : 0;
+    const O  = (nA + nB > 1e-6) ? Math.min(nA,nB) / Math.max(nA,nB) : 0;
+
+    /* T — activité transitoire  [C04] guard div/0 */
+    const key = `${p.a}-${p.b}`;
+    const cur = (eA + eB) / 2;
+    const prv = PREV_E[key];
+    let T;
+    if(prv === undefined || prv < 1e-6){
+      T = 0.35; /* [C04] valeur neutre — pas de NaN */
+    } else {
+      T = Math.min(1, Math.abs(cur - prv) / prv * 2) * ts;
+    }
+    PREV_E[key] = cur;
+
+    /* W — poids perceptif */
+    const W = pw(p.borderF);
+
+    /* C = O × T × W  [C04] vérification NaN */
+    let C = O * Math.max(0.25, T) * W;
+    if(!isFinite(C) || isNaN(C)) C = 0;
+    C = Math.min(1, Math.max(0, C));
+    if(C < thr) return;
+
+    /* Direction causale */
+    const diff = eA - eB;
+    let dir, dirLbl;
+    if(Math.abs(diff) > 0.12){
+      dir    = diff > 0 ? 'AtoB' : 'BtoA';
+      dirLbl = diff > 0 ? `${p.nA} → ${p.nB}` : `${p.nB} → ${p.nA}`;
+    } else {
+      dir = 'sym'; dirLbl = `${p.nA} ↔ ${p.nB}`;
+    }
+
+    const sev    = C > 0.85 ? 'CRITICAL' : C > 0.6 ? 'HIGH' : C > 0.3 ? 'MEDIUM' : 'LOW';
+    const impact = Math.round(C * 100);
+    let explain, effect;
+    if(dir === 'AtoB'){
+      explain = `Le ${p.nA.toLowerCase()} masque le ${p.nB.toLowerCase()} (${Math.round(p.loA)}–${Math.round(p.hiB)} Hz, −${impact}%).`;
+      effect  = C > 0.7 ? 'Perte d\'impact — groove affaibli' : C > 0.4 ? 'Manque de définition' : 'Tension légère';
+    } else if(dir === 'BtoA'){
+      explain = `Le ${p.nB.toLowerCase()} masque le ${p.nA.toLowerCase()} (${Math.round(p.loA)}–${Math.round(p.hiB)} Hz, −${impact}%).`;
+      effect  = C > 0.7 ? 'Clarté réduite — manque de punch' : C > 0.4 ? 'Élément écrasé' : 'Tension perceptive';
+    } else {
+      explain = `Collision ${p.nA}/${p.nB} à ${Math.round(p.loA)}–${Math.round(p.hiB)} Hz — ${sev}.`;
+      effect  = C > 0.6 ? 'Mix étouffant — densité excessive' : 'Collision modérée';
+    }
+    if(T > 0.7) explain += ' Intensifié sur les attaques.';
+
+    events.push({ C,O,T,W,sev,dir,dirLbl,explain,effect,loA:p.loA,hiB:p.hiB });
+  });
+
+  return events.sort((a,b) => b.C - a.C);
+}
+
+/* ─────────────────────────────────────────────────────────
+   MOTEUR 9 — ANTI-RULES (Arca)  [M11] seuils recalibrés
+   ───────────────────────────────────────────────────────── */
+const ANTI_ZONES = [
+  { name:'Ultra-sub (< 30 Hz)',        lo:20,    hi:30,    norm:0.04  },
+  { name:'Air (> 14 kHz)',             lo:14000, hi:20000, norm:0.08  },
+  { name:'Présence extrême (6–8 kHz)', lo:6000,  hi:8000,  norm:0.14  },
+  { name:'Low-mid creux (350–500 Hz)', lo:350,   hi:500,   norm:0.12  }, /* [M11] recalibré 0.04→0.12 */
+];
+
+function antiRules(){
+  /* [M11] Calibrage dynamique — moyenne glissante de l'énergie globale */
+  let globalE = 0;
+  if(S.freqData){
+    for(let k = 0; k < S.freqData.length; k++) globalE += S.freqData[k]/255;
+    globalE /= S.freqData.length;
+    S.antiCalib.mean = (S.antiCalib.mean * S.antiCalib.frames + globalE) / (S.antiCalib.frames + 1);
+    S.antiCalib.frames++;
+  }
+  const globalMean = S.antiCalib.mean || 0.05;
+
+  return ANTI_ZONES.filter(z => {
+    if(!S.freqData) return false;
+    const lo = freqIdx(z.lo), hi = freqIdx(z.hi);
+    let sum = 0, cnt = 0;
+    for(let k = lo; k <= hi && k < S.freqData.length; k++){ sum += S.freqData[k]/255; cnt++; }
+    z.energy = cnt > 0 ? Math.round(sum/cnt*100) : 0;
+    /* Seuil adaptatif : max(norm, globalMean*1.8) × 2.5 */
+    const adaptNorm = Math.max(z.norm, globalMean * 1.8);
+    return (sum/Math.max(1,cnt)) > adaptNorm * 2.5;
+  });
+}
+
+/* ─────────────────────────────────────────────────────────
+   RENDU — SPECTRE  [M10] clear cvs-view  [m19] CSS vars
+   ───────────────────────────────────────────────────────── */
+const COL_MAP = { CRITICAL:'rgba(255,85,85,', HIGH:'rgba(255,122,61,', MEDIUM:'rgba(245,166,35,', LOW:'rgba(123,111,255,' };
+
+function drawSpectrum(conflicts){
+  const cvsM = document.getElementById('cvs-main');
+  const cvsO = document.getElementById('cvs-over');
+  const cvsV = document.getElementById('cvs-view');
+  const cm   = cvsM.getContext('2d');
+  const co   = cvsO.getContext('2d');
+  const cv   = cvsV.getContext('2d'); /* [M10] */
+  const W = cvsM.width, H = cvsM.height;
+
+  /* [M10] Effacer cvs-view au retour sur spectre */
+  cv.clearRect(0,0,W,H);
+
+  cm.clearRect(0,0,W,H);
+  cm.fillStyle = '#060609'; cm.fillRect(0,0,W,H);
+
+  /* Grille */
+  [50,100,200,500,1000,2000,5000,10000].forEach(f => {
+    const y = fToY(f,H);
+    cm.strokeStyle='rgba(123,111,255,.055)'; cm.lineWidth=0.5;
+    cm.beginPath(); cm.moveTo(0,y); cm.lineTo(W,y); cm.stroke();
+  });
+
+  /* [C05] Spectrogramme — buffers pré-alloués, pas d'allocation ici */
+  const cW = W / SPEC_COLS;
+  for(let i = 0; i < SPEC_COLS; i++){
+    const col = S.specHistory[(S.specPos + i) % SPEC_COLS];
+    if(!col) continue;
+    const x = i * cW;
+    for(let k = 1; k < col.length - 1; k++){
+      const f1 = k * S.sampleRate / FFT_SIZE;
+      const f2 = (k+1) * S.sampleRate / FFT_SIZE;
+      if(f1 < 20 || f2 > 20000) continue;
+      const y1 = fToY(f1,H), y2 = fToY(f2,H);
+      const a  = col[k];
+      let r,g,b;
+      if(a < 0.25){ r=6; g=6; b=9+Math.round(a/0.25*40); }
+      else if(a < 0.6){ const t=(a-.25)/.35; r=Math.round(t*123); g=Math.round(t*40); b=Math.round(49+t*200); }
+      else { const t=(a-.6)/.4; r=Math.round(123-t*90); g=Math.round(40+t*172); b=Math.round(249-t*80); }
+      cm.fillStyle=`rgba(${r},${g},${b},${.5+a*.5})`;
+      cm.fillRect(x,Math.min(y1,y2),Math.max(1,cW),Math.max(1,Math.abs(y2-y1)));
+    }
+  }
+
+  /* Courbe spectre actuel */
+  if(S.freqData){
+    cm.beginPath(); let first=true;
+    for(let k=1;k<S.freqData.length;k++){
+      const freq=k*S.sampleRate/FFT_SIZE;
+      if(freq<20||freq>20000) continue;
+      const y=fToY(freq,H), barH=(S.freqData[k]/255)*(W*.11);
+      if(first){ cm.moveTo(W,y); first=false; } else cm.lineTo(W-barH,y);
+    }
+    cm.strokeStyle='rgba(123,111,255,.55)'; cm.lineWidth=1.5; cm.stroke();
+  }
+
+  /* [m17] Dirty flag — ne redessiner l'overlay que si conflits changés */
+  const sigNow = conflicts.map(c=>c.sev+c.loA).join('|');
+  const sigPrev= S.lastConflicts.map(c=>c.sev+c.loA).join('|');
+  if(sigNow !== sigPrev){ S.conflictsDirty=true; S.lastConflicts=conflicts; }
+  if(S.conflictsDirty){
+    co.clearRect(0,0,W,H);
+    conflicts.forEach(c => {
+      const y1=fToY(c.hiB,H), y2=fToY(c.loA,H), bH=y2-y1;
+      const col=COL_MAP[c.sev]||COL_MAP.LOW;
+      co.fillStyle=col+'0.07)'; co.fillRect(0,y1,W,bH);
+      co.fillStyle=col+'0.5)';  co.fillRect(W-5,y1,5,bH);
+      co.fillStyle=col+'0.85)'; co.font='10px "Space Mono",monospace';
+      co.fillText(`${c.sev} — ${c.dirLbl}`,8,y1+13);
+    });
+    S.conflictsDirty=false;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────
+   RENDU — GROOVE DNA
+   ───────────────────────────────────────────────────────── */
+function drawGrooveView(g){
+  const cvs=document.getElementById('cvs-view');
+  const ctx=cvs.getContext('2d');
+  const W=cvs.width,H=cvs.height;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#060609'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='rgba(123,111,255,.5)'; ctx.font='700 11px "Space Mono",monospace';
+  ctx.fillText('GROOVE DNA — Empreinte rythmique ★ Timbaland',14,22);
+  if(S.groovePeaks.length<4){
+    ctx.fillStyle='rgba(157,144,204,.4)'; ctx.font='11px "Space Grotesk",sans-serif';
+    ctx.fillText('En attente de données rythmiques…',14,H/2); return;
+  }
+  const ivs=[];
+  for(let i=1;i<S.groovePeaks.length;i++) ivs.push(S.groovePeaks[i]-S.groovePeaks[i-1]);
+  const maxIv=Math.max(...ivs,1), midY=H/2;
+  const bW=Math.min(22,(W-40)/ivs.length);
+  ctx.strokeStyle='rgba(123,111,255,.13)'; ctx.lineWidth=0.5;
+  ctx.beginPath(); ctx.moveTo(0,midY); ctx.lineTo(W,midY); ctx.stroke();
+  ivs.forEach((iv,i)=>{
+    const x=14+i*(bW+4), bH=Math.min(H*.36,(iv/maxIv)*H*.36);
+    const col=g.feel>60?'#00D4A8':g.feel>30?'#F5A623':'#7B6FFF';
+    ctx.fillStyle=col; ctx.globalAlpha=.75;
+    ctx.fillRect(x,midY-bH,bW,bH*2); ctx.globalAlpha=1;
+  });
+  const col=g.feel>60?'#00D4A8':g.feel>30?'#F5A623':'#7B6FFF';
+  ctx.fillStyle=col; ctx.font='700 28px "Space Mono",monospace';
+  ctx.fillText(`${g.feel}%`,W-90,50);
+  ctx.fillStyle='rgba(157,144,204,.5)'; ctx.font='9px "Space Mono",monospace';
+  ctx.fillText('HUMAN FEEL',W-90,64); ctx.fillText(g.label,14,H-12);
+}
+
+/* ─────────────────────────────────────────────────────────
+   RENDU — SILENCE INTELLIGENCE  [M14]
+   ───────────────────────────────────────────────────────── */
+function drawSilenceView(sd){
+  const cvs=document.getElementById('cvs-view');
+  const ctx=cvs.getContext('2d');
+  const W=cvs.width,H=cvs.height;
+  ctx.clearRect(0,0,W,H); ctx.fillStyle='#060609'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='rgba(212,83,126,.5)'; ctx.font='700 11px "Space Mono",monospace';
+  ctx.fillText('SILENCE INTELLIGENCE ★ Hildur Guðnadóttir',14,22);
+  ctx.fillStyle='rgba(212,83,126,.3)'; ctx.font='10px "Space Mono",monospace';
+  ctx.fillText(`Breath Score : ${sd.breathScore}% — Micro-silences rythmiques`,14,38);
+  if(S.silenceHist.length===0){
+    ctx.fillStyle='rgba(157,144,204,.4)'; ctx.font='11px "Space Grotesk",sans-serif';
+    ctx.fillText('Aucun espace silencieux détecté.',14,H/2);
+    ctx.fillText('Le mix est continu — pas de respiration.',14,H/2+20); return;
+  }
+  const maxD=Math.max(...S.silenceHist.map(s=>s.duration),1);
+  S.silenceHist.forEach((s,i)=>{
+    const x=14+i*30, bH=Math.round((s.duration/maxD)*(H-100)), y=H-40-bH;
+    ctx.fillStyle=`rgba(212,83,126,${.3+(s.duration/maxD)*.7})`;
+    ctx.fillRect(x,y,22,bH);
+    ctx.fillStyle='rgba(212,83,126,.4)'; ctx.font='9px "Space Mono",monospace';
+    ctx.fillText(`${s.duration}`,x-1,H-26);
+  });
+  ctx.fillStyle='rgba(212,83,126,.9)'; ctx.font='11px "Space Grotesk",sans-serif';
+  ctx.fillText(sd.label,14,H-10);
+}
+
+/* ─────────────────────────────────────────────────────────
+   RENDU — PLAYBACK SIMULATOR  [C07]
+   ───────────────────────────────────────────────────────── */
+function drawPlaybackView(){
+  const cvs=document.getElementById('cvs-view');
+  const ctx=cvs.getContext('2d');
+  const W=cvs.width,H=cvs.height;
+  ctx.clearRect(0,0,W,H); ctx.fillStyle='#060609'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='rgba(55,138,221,.5)'; ctx.font='700 11px "Space Mono",monospace';
+  ctx.fillText('PLAYBACK SIMULATOR ★ Max Martin — BiquadFilter WebAudio',14,22);
+  const cW=Math.floor((W-28)/S_simResults.length);
+  S_simResults.forEach((sys,i)=>{
+    const x=14+i*cW;
+    ctx.fillStyle='rgba(55,138,221,.04)'; ctx.fillRect(x,50,cW-8,H-70);
+    const bH=Math.round((sys.score/100)*(H-120)), bY=H-40-bH;
+    const col=sys.score>70?'#00D4A8':sys.score>40?'#F5A623':'#FF5555';
+    ctx.fillStyle=col; ctx.globalAlpha=.8;
+    ctx.fillRect(x+8,bY,cW-24,bH); ctx.globalAlpha=1;
+    ctx.font='22px "Space Grotesk",sans-serif'; ctx.fillStyle='#F2F0FF';
+    ctx.fillText(sys.icon,x+8,72);
+    ctx.font='700 9px "Space Mono",monospace'; ctx.fillStyle='rgba(157,144,204,.7)';
+    ctx.fillText(sys.name.toUpperCase(),x+4,88);
+    ctx.font=`700 20px "Space Mono",monospace`; ctx.fillStyle=col;
+    ctx.fillText(`${sys.score}`,x+8,H-46);
+    ctx.font='9px "Space Grotesk",sans-serif'; ctx.fillStyle='rgba(255,85,85,.85)';
+    sys.issues.forEach((issue,j)=>ctx.fillText(issue,x+4,bY-10-j*14));
+    if(!sys.ready){
+      ctx.fillStyle='rgba(157,144,204,.4)'; ctx.font='10px "Space Grotesk",sans-serif';
+      ctx.fillText('Calcul…',x+8,H/2);
+    }
+  });
+}
+
+/* ─────────────────────────────────────────────────────────
+   RENDU — ANTI-RULES  [M11]
+   ───────────────────────────────────────────────────────── */
+function drawAntiView(zones){
+  const cvs=document.getElementById('cvs-view');
+  const ctx=cvs.getContext('2d');
+  const W=cvs.width,H=cvs.height;
+  ctx.clearRect(0,0,W,H); ctx.fillStyle='#060609'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='rgba(0,212,168,.5)'; ctx.font='700 11px "Space Mono",monospace';
+  ctx.fillText('ANTI-RULES — Zones non-conventionnelles ★ Arca',14,22);
+  if(zones.length===0){
+    ctx.fillStyle='rgba(0,212,168,.6)'; ctx.font='13px "Space Grotesk",sans-serif';
+    ctx.fillText('✓ Aucune zone non-conventionnelle.',14,H/2-8);
+    ctx.fillStyle='rgba(157,144,204,.4)'; ctx.font='11px "Space Grotesk",sans-serif';
+    ctx.fillText('Le mix suit les règles perceptives standard.',14,H/2+14); return;
+  }
+  zones.forEach((zone,i)=>{
+    const y=52+i*68;
+    ctx.strokeStyle='rgba(0,212,168,.4)'; ctx.lineWidth=1;
+    ctx.strokeRect(14,y,W-28,56);
+    ctx.fillStyle='rgba(0,212,168,.04)'; ctx.fillRect(14,y,W-28,56);
+    ctx.fillStyle='#00D4A8'; ctx.font='700 11px "Space Mono",monospace';
+    ctx.fillText(`★ SIGNATURE POTENTIELLE — ${zone.name.toUpperCase()}`,22,y+18);
+    ctx.fillStyle='rgba(157,144,204,.7)'; ctx.font='10px "Space Grotesk",sans-serif';
+    ctx.fillText(`Énergie : ${zone.energy}% dans une zone typiquement inactive.`,22,y+34);
+    ctx.fillText('→ Peut être votre signature sonore distinctive.',22,y+50);
+  });
+}
+
+/* ─────────────────────────────────────────────────────────
+   MISE À JOUR UI  [M15] reset .lit  [UX22] ring reveal
+   ───────────────────────────────────────────────────────── */
+function updateUI(bands, conflicts, genre, temp, groove, silData, anti){
+  /* Bandes */
+  BANDS.forEach(b => {
+    const el=document.getElementById('b-'+b.id);
+    const db=document.getElementById('db-'+b.id);
+    const e=bands[b.id]||0;
+    if(el) el.style.width=Math.min(100,e*140)+'%';
+    if(db) db.textContent=toDB(e).toFixed(0)+'dB';
+  });
+
+  /* [UX21] Conflits — overflow ellipsis + expansion clic */
+  const list=document.getElementById('cf-list');
+  if(conflicts.length===0){
+    list.innerHTML='<div class="no-cf">✓ Aucun conflit perceptif.<br/>Ton mix respire bien.</div>';
+  } else {
+    list.innerHTML=conflicts.map(c=>`
+      <div class="cf-item ${c.sev}" onclick="this.classList.toggle('expanded')">
+        <div class="cf-top">
+          <span class="cf-sev ${c.sev}">${c.sev}</span>
+          <span class="cf-freq">${Math.round(c.loA)}–${Math.round(c.hiB)} Hz</span>
+        </div>
+        <div class="cf-explain" title="${c.explain}">${c.explain}</div>
+        <div class="cf-effect">${c.effect}</div>
+      </div>`).join('');
+  }
+
+  /* Score  [UX22] révéler ring au premier calcul */
+  const dens  =Object.values(bands).reduce((a,v)=>a+v,0)/5;
+  const maxSev=conflicts.length>0?conflicts[0].C:0;
+  const health=Math.max(0,Math.min(100,Math.round((1-maxSev*.6-dens*.35)*100)));
+
+  if(!S.firstScore){
+    /* Révéler ring et score avec transition */
+    document.getElementById('ring-fill').style.opacity='1';
+    document.getElementById('score-n').style.opacity='1';
+    S.firstScore=true;
+  }
+
+  const circ=263;
+  document.getElementById('ring-fill').style.strokeDashoffset=circ-(health/100)*circ;
+  document.getElementById('score-n').textContent=health;
+
+  const [col,lbl,det]=health>80?['#00D4A8','Mix propre','Peu de conflits perceptifs.']
+    :health>60?['#F5A623','Attention','Conflits modérés à corriger.']
+    :health>40?['#FF7A3D','Conflits sérieux','Manque de clarté et d\'impact.']
+    :['#FF5555','Mix critique','Conflits majeurs — perte d\'impact.'];
+
+  document.getElementById('ring-fill').style.stroke=col;
+  document.getElementById('score-n').style.color=col;
+  document.getElementById('health-t').style.color=col;
+  document.getElementById('health-t').textContent=lbl;
+  document.getElementById('health-d').textContent=det;
+
+  /* Métriques */
+  const top=conflicts[0];
+  const setM=(id,bid,v)=>{
+    const el=document.getElementById(id),bar=document.getElementById(bid);
+    if(el) el.textContent=v!==null?(v*100).toFixed(0)+'%':'—';
+    if(bar) bar.style.width=v!==null?Math.min(100,v*100)+'%':'0%';
+  };
+  setM('m-O','mb-O',top?top.O:null);
+  setM('m-T','mb-T',top?Math.min(1,top.T):null);
+  setM('m-W','mb-W',top?top.W:null);
+  setM('m-D','mb-D',dens);
+
+  document.getElementById('m-genre').textContent=genre?genre.genre:'Calibrage…';
+  document.getElementById('m-temp').textContent=temp;
+  document.getElementById('m-feel').textContent=groove.feel>0?groove.label:'—';
+  document.getElementById('m-breath').textContent=S.breathScore>0?S.breathScore+'% de respirations':'—';
+
+  /* RMS */
+  let rmsSum=0;
+  if(S.freqData) for(let i=0;i<S.freqData.length;i++) rmsSum+=(S.freqData[i]/255)**2;
+  const rms=Math.sqrt(rmsSum/Math.max(1,S.freqData?S.freqData.length:1));
+  document.getElementById('rms-fill').style.width=Math.min(100,rms*200)+'%';
+
+  /* [M15] Reset .lit avant de re-calculer */
+  document.querySelectorAll('.surp-card').forEach(el=>el.classList.remove('lit'));
+  document.querySelector('.surp-card.lit') &&
+    document.querySelectorAll('.surp-card')[4].classList.add('lit'); /* Eno toujours lit */
+
+  const $=(id,html)=>{ const el=document.getElementById(id); if(el) el.innerHTML=html; };
+  const lit=id=>{ const el=document.getElementById(id); if(el) el.classList.add('lit'); };
+
+  $('st-dilla',`<strong>Human Feel : ${groove.feel}%</strong> — ${groove.label}`);
+  if(groove.feel>50) lit('sc-dilla');
+
+  $('st-pharrell',`<strong>Température :</strong> ${temp}`);
+
+  const allSilent=Object.values(bands).every(v=>v<0.06);
+  $('st-rubin',allSilent?'<strong>🔇 Ne touche à rien.</strong> Ce silence est parfait.':'Mode Silence : signal actif.');
+  if(allSilent) lit('sc-rubin');
+
+  /* [C06] genre neutre pendant chauffe */
+  if(genre && genre.genre!=='—'){
+    $('st-quincy',`<strong>Genre :</strong> ${genre.genre} — seuil ${(genre.thr*100).toFixed(0)}%`);
+  }
+
+  $('st-arca',anti.length>0?`<strong>${anti.length} zone(s) non-conventionnelle(s)</strong> — onglet Anti-rules.`:'Aucune zone non-conventionnelle.');
+  if(anti.length>0) lit('sc-arca');
+
+  $('st-hildur',`<strong>${silData.count} silence(s)</strong> — ${silData.label}`);
+  if(silData.count>0) lit('sc-hildur');
+
+  const worst=S_simResults.reduce((a,b)=>a.score<b.score?a:b);
+  $('st-maxm',worst.ready?`<strong>Score le + bas : ${worst.icon} ${worst.name} (${worst.score}/100)</strong>`:'Calcul BiquadFilter…');
+  if(worst.ready && worst.score<60) lit('sc-maxm');
+
+  /* [M12] Enregistrement session */
+  S.sessionLog.push({ ts:Date.now(), health, conflicts:conflicts.length, genre:genre?genre.genre:'—', temp });
+  if(S.sessionLog.length>3000) S.sessionLog.shift();
+}
+
+/* ─────────────────────────────────────────────────────────
+   BOUCLE PRINCIPALE  [C04] guard vide
+   ───────────────────────────────────────────────────────── */
+let _raf=null;
+let _simTimer=null;
+
+function loop(){
+  if(!S.running) return;
+  _raf=requestAnimationFrame(loop);
+
+  /* Lire données FFT */
+  S.analyser.getByteFrequencyData(S.freqData);
+  S.analyser.getByteTimeDomainData(S.timeData);
+  S.frameCount++;
+
+  /* [C04] Guard — tout à zéro = silence ou démarrage */
+  if(S.freqData.every(v=>v===0)){
+    /* Dessiner quand même le spectre vide */
+    if(S.currentView==='spectrum') drawSpectrum([]);
+    return;
+  }
+
+  /* [C05] Stocker dans le buffer pré-alloué — .set() sans allocation */
+  const col=S.specHistory[S.specPos];
+  for(let k=0;k<col.length;k++) col[k]=S.freqData[k]/255;
+  S.specPos=(S.specPos+1)%SPEC_COLS;
+
+  /* Appel des moteurs */
+  const bands    =computeBands();
+  const tAct     =Math.abs((bands.sub+bands.bass)-(S.prevBands.sub+S.prevBands.bass));
+  const genre    =detectGenre(bands,tAct);
+  const temp     =temperature(bands);
+  const conflicts=detectConflicts(bands,genre);
+  const groove   =grooveDNA();
+  const silData  =silenceIntel(bands,performance.now());
+  const anti     =antiRules();
+
+  /* [C07] Lancer la simulation Playback toutes les 2s (asynchrone) */
+  if(!_simTimer){
+    _simTimer=setTimeout(()=>{ runPlaybackSim(bands); _simTimer=null; },2000);
+  }
+
+  updateUI(bands,conflicts,genre,temp,groove,silData,anti);
+
+  /* Rendu */
+  switch(S.currentView){
+    case 'spectrum':  drawSpectrum(conflicts);  break;
+    case 'groove':    drawGrooveView(groove);    break;
+    case 'silence':   drawSilenceView(silData);  break;
+    case 'playback':  drawPlaybackView();         break;
+    case 'antirules': drawAntiView(anti);         break;
+  }
+
+  Object.assign(S.prevBands,bands);
+}
+
+/* ─────────────────────────────────────────────────────────
+   INITIALISATION AUDIO
+   ───────────────────────────────────────────────────────── */
+async function startAudio(srcNode,actx){
+  if(S.ctx){ try{ S.ctx.close(); }catch(e){} }
+  cancelAnimationFrame(_raf);
+  clearTimeout(_simTimer); _simTimer=null;
+
+  S.ctx=actx; S.sampleRate=actx.sampleRate;
+  S.analyser=actx.createAnalyser();
+  S.analyser.fftSize=FFT_SIZE;
+  S.analyser.smoothingTimeConstant=0.82;
+  S.freqData=new Uint8Array(S.analyser.frequencyBinCount);
+  S.timeData=new Uint8Array(S.analyser.fftSize);
+
+  srcNode.connect(S.analyser);
+  S.analyser.connect(actx.destination);
+  S.source=srcNode; S.running=true; S.frameCount=0;
+
+  /* [C05] Réinitialiser buffers pré-alloués */
+  S.specHistory.forEach(col=>col.fill(0)); S.specPos=0;
+
+  /* Réinitialiser historiques */
+  S.groovePeaks=[]; S.grooveBuf=[]; S.genreHistory=[];
+  S.silenceHist=[]; S.microSilenceCount=0; S.breathScore=0;
+  S.inSilence=false; S.antiCalib={ mean:0, frames:0 };
+  S.lastConflicts=[]; S.conflictsDirty=true;
+  S.sessionStart=Date.now(); S.sessionLog=[];
+  S_simResults=PLAYBACK_PROFILES.map(p=>({ ...p,score:50,issues:[],ready:false }));
+
+  /* [M15] Reset surprises */
+  document.querySelectorAll('.surp-card').forEach(el=>el.classList.remove('lit'));
+  document.querySelectorAll('.surp-card')[4].classList.add('lit'); /* Eno */
+
+  document.getElementById('uzone').classList.add('hidden');
+  document.getElementById('scan').classList.add('on');
+  document.getElementById('s-dot').className='s-dot live';
+
+  /* [m18] buildRuler après chargement */
+  buildRuler();
+
+  /* [UX22] reset ring pour nouveau fichier */
+  if(S.firstScore){
+    document.getElementById('ring-fill').style.strokeDashoffset='263';
+    document.getElementById('ring-fill').style.opacity='0';
+    document.getElementById('score-n').style.opacity='0';
+    S.firstScore=false;
+    setTimeout(()=>{ /* attendre le 1er score */ },100);
+  }
+
+  loop();
+}
+
+/* ─────────────────────────────────────────────────────────
+   CHARGEMENT FICHIER  [UX20] barre décodage
+   ───────────────────────────────────────────────────────── */
+function loadFile(file){
+  if(!file) return;
+  /* [UX20] Afficher barre de décodage */
+  const bar=document.getElementById('decode-bar');
+  const lbl=document.getElementById('decode-label');
+  bar.style.display='block'; lbl.style.display='block';
+  document.getElementById('btn-big').style.display='none';
+  document.getElementById('s-text').textContent='Décodage…';
+
+  const reader=new FileReader();
+  reader.onload=async e=>{
+    try{
+      const actx=new(window.AudioContext||window.webkitAudioContext)();
+      const buffer=await actx.decodeAudioData(e.target.result);
+      const src=actx.createBufferSource();
+      src.buffer=buffer; src.loop=true; src.start();
+
+      const dur=Math.round(buffer.duration);
+      const durStr=dur>60?`${Math.floor(dur/60)}m ${dur%60}s`:`${dur}s`;
+
+      /* Masquer barre décodage */
+      bar.style.display='none'; lbl.style.display='none';
+      document.getElementById('btn-big').style.display='';
+
+      await startAudio(src,actx);
+      document.getElementById('s-text').textContent=`▶ ${file.name} (${durStr})`;
+      document.getElementById('btn-mic').textContent='🎙 Micro live';
+      document.getElementById('btn-mic').classList.remove('recording');
+      S.micActive=false;
+      toast(`Fichier chargé — ${durStr} — analyse démarrée.`);
+    }catch(err){
+      bar.style.display='none'; lbl.style.display='none';
+      document.getElementById('btn-big').style.display='';
+      document.getElementById('s-dot').className='s-dot err';
+      document.getElementById('s-text').textContent='Erreur de décodage';
+      toast('Format non supporté. Essaie un MP3 ou WAV.');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+/* ─────────────────────────────────────────────────────────
+   EXPORT RAPPORT JSON  [M12]
+   ───────────────────────────────────────────────────────── */
+document.getElementById('btn-export').addEventListener('click',()=>{
+  const report={
+    version:'Son-Aura v3',
+    exported:new Date().toISOString(),
+    sessionDuration:S.sessionStart?Math.round((Date.now()-S.sessionStart)/1000)+'s':'—',
+    file:document.getElementById('s-text').textContent,
+    genre:S.genreCtx?S.genreCtx.genre:'—',
+    lastHealth:document.getElementById('score-n').textContent,
+    temperature:document.getElementById('m-temp').textContent,
+    grooveFeel:document.getElementById('m-feel').textContent,
+    breathScore:S.breathScore+'%',
+    macroSilences:S.silenceHist.length,
+    intentionZones:S.intentZones,
+    playbackScores:S_simResults.map(s=>({ system:s.name,score:s.score,issues:s.issues })),
+    conflictHistory:S.sessionLog.slice(-100),
+  };
+  const blob=new Blob([JSON.stringify(report,null,2)],{ type:'application/json' });
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`sonaura-rapport-${Date.now()}.json`;
+  a.click();
+  toast('Rapport JSON exporté.');
+});
+
+/* ─────────────────────────────────────────────────────────
+   MICRO  
+   ───────────────────────────────────────────────────────── */
+document.getElementById('btn-mic').addEventListener('click',async()=>{
+  if(S.micActive){
+    S.running=S.micActive=false;
+    if(S.source){ try{ S.source.disconnect(); }catch(e){} }
+    if(S.ctx){ try{ S.ctx.close(); }catch(e){} S.ctx=null; }
+    document.getElementById('btn-mic').textContent='🎙 Micro live';
+    document.getElementById('btn-mic').classList.remove('recording');
+    document.getElementById('s-dot').className='s-dot';
+    document.getElementById('s-text').textContent='Arrêté';
+    document.getElementById('scan').classList.remove('on');
+    cancelAnimationFrame(_raf); return;
+  }
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({ audio:true,video:false });
+    const actx=new AudioContext();
+    const src=actx.createMediaStreamSource(stream);
+    await startAudio(src,actx);
+    S.micActive=true;
+    document.getElementById('btn-mic').textContent='⏹ Stop micro';
+    document.getElementById('btn-mic').classList.add('recording');
+    document.getElementById('s-text').textContent='Micro actif — live';
+    toast('Micro actif. Joue quelque chose !');
+  }catch(err){
+    document.getElementById('s-dot').className='s-dot err';
+    document.getElementById('s-text').textContent='Micro refusé';
+    toast('Permission micro refusée dans le navigateur.');
+  }
+});
+
+/* ─────────────────────────────────────────────────────────
+   FICHIER & DRAG/DROP
+   ───────────────────────────────────────────────────────── */
+const fileIn=document.getElementById('file-in');
+document.getElementById('btn-file').addEventListener('click',()=>fileIn.click());
+document.getElementById('btn-big').addEventListener('click',()=>fileIn.click());
+fileIn.addEventListener('change',e=>loadFile(e.target.files[0]));
+document.addEventListener('dragover',e=>e.preventDefault());
+document.addEventListener('drop',e=>{ e.preventDefault(); const f=e.dataTransfer.files[0]; if(f&&f.type.startsWith('audio/')) loadFile(f); });
+
+/* ─────────────────────────────────────────────────────────
+   ONGLETS  [M10] clear cvs-view sur retour spectre
+   ───────────────────────────────────────────────────────── */
+document.querySelectorAll('.viz-tab').forEach(tab=>{
+  tab.addEventListener('click',()=>{
+    document.querySelectorAll('.viz-tab').forEach(t=>t.classList.remove('active'));
+    tab.classList.add('active');
+    const prev=S.currentView;
+    S.currentView=tab.dataset.view;
+
+    /* [M10] Vide le cvs-view si on revient sur spectrum */
+    if(prev!=='spectrum' && S.currentView==='spectrum'){
+      const cvs=document.getElementById('cvs-view');
+      const ctx=cvs.getContext('2d');
+      ctx.clearRect(0,0,cvs.width,cvs.height);
+    }
+
+    if(!S.running){
+      const cvs=document.getElementById('cvs-view');
+      const ctx=cvs.getContext('2d');
+      ctx.clearRect(0,0,cvs.width,cvs.height);
+      ctx.fillStyle='#060609'; ctx.fillRect(0,0,cvs.width,cvs.height);
+      ctx.fillStyle='rgba(123,111,255,.3)'; ctx.font='11px "Space Mono"';
+      ctx.fillText('Démarre l\'audio pour activer cette vue.',14,cvs.height/2);
+    }
+  });
+});
+
+/* ─────────────────────────────────────────────────────────
+   INTENTION FLAG  [C02] localStorage persistance
+   ───────────────────────────────────────────────────────── */
+const LS_KEY='sonaura_intent_v1';
+
+function loadIntentFromLS(){
+  try{ const d=localStorage.getItem(LS_KEY); if(d) S.intentZones=JSON.parse(d); }catch(e){}
+  renderFlags();
+}
+function saveIntentToLS(){
+  try{ localStorage.setItem(LS_KEY,JSON.stringify(S.intentZones)); }catch(e){}
+}
+
+document.getElementById('btn-flag').addEventListener('click',()=>{
+  const key=document.getElementById('flag-sel').value;
+  if(S.intentZones.includes(key)) return;
+  S.intentZones.push(key); saveIntentToLS(); renderFlags();
+  toast(`Zone "${key}" marquée intentionnelle — persistée en localStorage.`);
+});
+function renderFlags(){
+  document.getElementById('flags-wrap').innerHTML=S.intentZones
+    .map(k=>`<span class="flag-tag" onclick="rmFlag('${k}')">${k} ×</span>`).join('');
+}
+window.rmFlag=k=>{ S.intentZones=S.intentZones.filter(z=>z!==k); saveIntentToLS(); renderFlags(); };
+
+loadIntentFromLS(); /* [C02] Charger au démarrage */
+
+/* ─────────────────────────────────────────────────────────
+   CANVAS RESIZE  [m18] buildRuler dans resizeAll
+   ───────────────────────────────────────────────────────── */
+function resizeAll(){
+  const wrap=document.querySelector('.cvs-wrap');
+  const W=wrap.clientWidth, H=wrap.clientHeight;
+  ['cvs-main','cvs-over','cvs-view'].forEach(id=>{
+    const c=document.getElementById(id); c.width=W; c.height=H;
+  });
+  buildRuler();
+}
+
+function buildRuler(){
+  const ruler=document.getElementById('ruler');
+  const W=ruler.clientWidth;
+  ruler.innerHTML=[50,100,200,500,1000,2000,5000,10000,16000]
+    .map(f=>{
+      const x=fToX(f,W);
+      return `<span class="freq-lbl" style="left:${x}px">${f>=1000?(f/1000)+'k':f}</span>`;
+    }).join('');
+}
+
+window.addEventListener('resize',resizeAll);
+resizeAll();
+
+/* ─────────────────────────────────────────────────────────
+   TOAST
+   ───────────────────────────────────────────────────────── */
+function toast(msg){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.classList.add('show');
+  setTimeout(()=>el.classList.remove('show'),3200);
+}
+</script>
+</body>
+</html>
